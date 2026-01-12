@@ -12,7 +12,7 @@ KlipperPlace builds on Klipper’s proven core and extends it for machine types 
 
 Key goals:
 - Precise multi-axis motion control
-- Deterministic timing for feeders, vacuum, and tool I/O
+- Integrates seamlessly with openpnp
 - Flexible kinematics suitable for PnP machines
 - Compatibility with Klipper’s configuration and extension model
 
