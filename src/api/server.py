@@ -21,6 +21,9 @@ from middleware.translator import (
 from middleware.cache import StateCacheManager, CacheCategory
 from middleware.safety import SafetyManager, SafetyLimits
 
+# Import authentication
+from .auth import create_auth_manager, APIKeyManager, AuthLogger
+
 # Import routes
 from .routes import setup_routes
 
@@ -39,7 +42,8 @@ class APIServer:
                  moonraker_api_key: Optional[str] = None,
                  api_key_enabled: bool = False,
                  api_key: Optional[str] = None,
-                 enable_cors: bool = True):
+                 enable_cors: bool = True,
+                 auth_config: Optional[Dict[str, Any]] = None):
         """Initialize API server.
         
         Args:
@@ -49,8 +53,9 @@ class APIServer:
             moonraker_port: Moonraker port
             moonraker_api_key: Optional Moonraker API key
             api_key_enabled: Enable API key authentication
-            api_key: API key for authentication
+            api_key: API key for authentication (legacy, for backward compatibility)
             enable_cors: Enable CORS support
+            auth_config: Authentication configuration dictionary
         """
         self.host = host
         self.port = port
@@ -60,6 +65,19 @@ class APIServer:
         self.api_key_enabled = api_key_enabled
         self.api_key = api_key
         self.enable_cors = enable_cors
+        
+        # Initialize authentication components
+        if auth_config is None:
+            auth_config = {}
+        
+        # Add legacy api_key to config if provided
+        if api_key and not auth_config.get('api_key'):
+            auth_config['api_key'] = api_key
+        
+        auth_config['api_key_enabled'] = api_key_enabled
+        auth_config['api_key_storage_path'] = auth_config.get('api_key_storage_path', 'config/api_keys.json')
+        
+        self.key_manager, self.auth_middleware, self.auth_logger = create_auth_manager(auth_config)
         
         # Initialize middleware components
         self.translator = OpenPNPTranslator(
@@ -112,6 +130,9 @@ class APIServer:
         # Setup CORS middleware if enabled
         if self.enable_cors:
             self._setup_cors()
+        
+        # Setup authentication middleware
+        self.app.middlewares.append(self.auth_middleware.middleware)
         
         # Setup routes
         setup_routes(self.app)
@@ -170,32 +191,6 @@ class APIServer:
         
         self.app.middlewares.append(cors_middleware)
         logger.info("CORS middleware enabled")
-    
-    @web.middleware
-    async def auth_middleware(request: web.Request, handler):
-        """Authentication middleware for API key validation."""
-        server = request.app['server']
-        
-        # Skip auth if disabled
-        if not server.api_key_enabled:
-            return await handler(request)
-        
-        # Get API key from header
-        provided_key = request.headers.get('X-API-Key')
-        
-        # Validate API key
-        if not provided_key or provided_key != server.api_key:
-            logger.warning(f"Authentication failed from {request.remote}")
-            return web.json_response(
-                {
-                    'status': 'error',
-                    'error_code': 'AUTHENTICATION_FAILED',
-                    'error_message': 'Invalid or missing API key'
-                },
-                status=401
-            )
-        
-        return await handler(request)
     
     @web.middleware
     async def error_middleware(request: web.Request, handler):
@@ -306,7 +301,8 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> web.Application:
         moonraker_api_key=moonraker_api_key,
         api_key_enabled=api_key_enabled,
         api_key=api_key,
-        enable_cors=enable_cors
+        enable_cors=enable_cors,
+        auth_config=config
     )
     
     # Create application
@@ -318,7 +314,7 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> web.Application:
     if enable_cors:
         server._setup_cors()
     
-    app.middlewares.append(server.auth_middleware)
+    app.middlewares.append(server.auth_middleware.middleware)
     app.middlewares.append(server.error_middleware)
     app.middlewares.append(server.logging_middleware)
     
@@ -348,7 +344,8 @@ async def run_server(config: Optional[Dict[str, Any]] = None) -> APIServer:
         moonraker_api_key=config.get('moonraker_api_key'),
         api_key_enabled=config.get('api_key_enabled', False),
         api_key=config.get('api_key'),
-        enable_cors=config.get('enable_cors', True)
+        enable_cors=config.get('enable_cors', True),
+        auth_config=config
     )
     
     await server.start()

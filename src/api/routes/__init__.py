@@ -29,7 +29,8 @@ def setup_routes(app: web.Application) -> None:
         queue_routes,
         system_routes,
         batch_routes,
-        version_routes
+        version_routes,
+        auth_routes
     )
     
     # Setup routes
@@ -47,6 +48,7 @@ def setup_routes(app: web.Application) -> None:
     system_routes.setup(app)
     batch_routes.setup(app)
     version_routes.setup(app)
+    auth_routes.setup(app)
     
     logger.info("All API routes registered")
 
