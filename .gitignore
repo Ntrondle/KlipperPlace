@@ -157,3 +157,5 @@ external_repos/*/out/
 external_repos/*/.config
 external_repos/*/.config.old
 external_repos/*/klippy/.version
+external_repos/moonraker/
+external_repos/klipper/
