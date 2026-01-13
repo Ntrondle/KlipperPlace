@@ -1,133 +1,74 @@
-# Klipper build system
-#
-# Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
-#
-# This file may be distributed under the terms of the GNU GPLv3 license.
+# KlipperPlace Makefile
+# Common tasks for development and testing
 
-# Output directory
-OUT=out/
+.PHONY: help install install-dev test lint format type-check clean build docs
 
-# Kconfig includes
-export KCONFIG_CONFIG     := $(CURDIR)/.config
--include $(KCONFIG_CONFIG)
+help: ## Show this help message
+	@echo "KlipperPlace - Available commands:"
+	@echo ""
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-# Common command definitions
-CC=$(CROSS_PREFIX)gcc
-AS=$(CROSS_PREFIX)as
-LD=$(CROSS_PREFIX)ld
-OBJCOPY=$(CROSS_PREFIX)objcopy
-OBJDUMP=$(CROSS_PREFIX)objdump
-STRIP=$(CROSS_PREFIX)strip
-CPP=cpp
-PYTHON=python3
+install: ## Install the package
+	pip install -e .
 
-# Source files
-src-y =
-dirs-y = src
+install-dev: ## Install the package with development dependencies
+	pip install -e .[dev]
 
-# Default compiler flags
-cc-option=$(shell if test -z "`$(1) $(2) -S -o /dev/null -xc /dev/null 2>&1`" \
-    ; then echo "$(2)"; else echo "$(3)"; fi ;)
+test: ## Run tests
+	pytest
 
-CFLAGS := -iquote $(OUT) -iquote src -iquote $(OUT)board-generic/ \
-		-std=gnu11 -O2 -MD -Wall \
-		-Wold-style-definition $(call cc-option,$(CC),-Wtype-limits,) \
-    -ffunction-sections -fdata-sections -fno-delete-null-pointer-checks
-CFLAGS += -flto=auto -fwhole-program -fno-use-linker-plugin -ggdb3
+test-cov: ## Run tests with coverage
+	pytest --cov=src --cov-report=html --cov-report=term
 
-OBJS_klipper.elf = $(patsubst %.c, $(OUT)src/%.o,$(src-y))
-OBJS_klipper.elf += $(OUT)compile_time_request.o
-CFLAGS_klipper.elf = $(CFLAGS) -Wl,--gc-sections
+lint: ## Run linting
+	ruff check src/ tests/
 
-CPPFLAGS = -I$(OUT) -P -MD -MT $@
+format: ## Format code with black
+	black src/ tests/
 
-# Default targets
-target-y := $(OUT)klipper.elf
+format-check: ## Check code formatting
+	black --check src/ tests/
 
-all:
+type-check: ## Run type checking with mypy
+	mypy src/
 
-# Run with "make V=1" to see the actual compile commands
-ifdef V
-Q=
-else
-Q=@
-MAKEFLAGS += --no-print-directory
-endif
+check-all: lint format-check type-check test ## Run all checks (lint, format, type-check, test)
 
-# Include board specific makefile
-include src/Makefile
--include src/$(patsubst "%",%,$(CONFIG_BOARD_DIRECTORY))/Makefile
+clean: ## Clean build artifacts
+	rm -rf build/
+	rm -rf dist/
+	rm -rf *.egg-info/
+	rm -rf .pytest_cache/
+	rm -rf .mypy_cache/
+	rm -rf htmlcov/
+	rm -rf .coverage
+	find . -type d -name __pycache__ -exec rm -rf {} +
+	find . -type f -name '*.pyc' -delete
 
-################ Main build rules
+build: ## Build the package
+	python -m build
 
-$(OUT)%.o: %.c $(OUT)autoconf.h
-	@echo "  Compiling $@"
-	$(Q)$(CC) $(CFLAGS) -c $< -o $@
+docs: ## Generate documentation
+	@echo "Documentation generation not yet implemented"
 
-$(OUT)%.ld: %.lds.S $(OUT)autoconf.h
-	@echo "  Preprocessing $@"
-	$(Q)$(CPP) -I$(OUT) -P -MD -MT $@ $< -o $@
+# Development helpers
+dev-setup: install-dev ## Set up development environment
+	@echo "Development environment setup complete!"
+	@echo "Run 'make test' to verify installation."
 
-$(OUT)klipper.elf: $(OBJS_klipper.elf)
-	@echo "  Linking $@"
-	$(Q)$(CC) $(OBJS_klipper.elf) $(CFLAGS_klipper.elf) -o $@
-	$(Q)scripts/check-gcc.sh $@ $(OUT)compile_time_request.o
+watch: ## Watch for file changes and run tests (requires pytest-watch)
+	pytest-watch
 
-################ Compile time requests
+# External repository management
+update-external: ## Update external repositories
+	@echo "Updating external repositories..."
+	cd external_repos/moonraker && git pull
+	cd external_repos/klipper && git pull
+	cd external_repos/openpnp-main && git pull
 
-$(OUT)%.o.ctr: $(OUT)%.o
-	$(Q)$(OBJCOPY) -j '.compile_time_request' -O binary $^ $@
+# Docker support (optional)
+docker-build: ## Build Docker image
+	docker build -t klipperplace:latest .
 
-$(OUT)compile_time_request.o: $(patsubst %.c, $(OUT)src/%.o.ctr,$(src-y)) ./scripts/buildcommands.py
-	@echo "  Building $@"
-	$(Q)cat $(patsubst %.c, $(OUT)src/%.o.ctr,$(src-y)) | tr -s '\0' '\n' > $(OUT)compile_time_request.txt
-	$(Q)$(PYTHON) ./scripts/buildcommands.py -d $(OUT)klipper.dict -t "$(CC);$(AS);$(LD);$(OBJCOPY);$(OBJDUMP);$(STRIP)" $(OUT)compile_time_request.txt $(OUT)compile_time_request.c
-	$(Q)$(CC) $(CFLAGS) -c $(OUT)compile_time_request.c -o $@
-
-################ Auto generation of "board/" include file link
-
-create-board-link:
-	@echo "  Creating symbolic link $(OUT)board"
-	$(Q)mkdir -p $(addprefix $(OUT), $(dirs-y))
-	$(Q)rm -f $(OUT)*.d $(patsubst %,$(OUT)%/*.d,$(dirs-y))
-	$(Q)rm -f $(OUT)board
-	$(Q)ln -sf $(CURDIR)/src/$(CONFIG_BOARD_DIRECTORY) $(OUT)board
-	$(Q)mkdir -p $(OUT)board-generic
-	$(Q)rm -f $(OUT)board-generic/board
-	$(Q)ln -sf $(CURDIR)/src/generic $(OUT)board-generic/board
-
-# Hack to rebuild OUT directory and reload make dependencies on Kconfig change
-$(OUT)board-link: $(KCONFIG_CONFIG)
-	$(Q)mkdir -p $(OUT)
-	$(Q)echo "# Makefile board-link rule" > $@
-	$(Q)$(MAKE) create-board-link
-include $(OUT)board-link
-
-################ Kconfig rules
-
-$(OUT)autoconf.h: $(KCONFIG_CONFIG)
-	@echo "  Building $@"
-	$(Q)mkdir -p $(OUT)
-	$(Q) KCONFIG_AUTOHEADER=$@ $(PYTHON) lib/kconfiglib/genconfig.py src/Kconfig
-
-$(KCONFIG_CONFIG) olddefconfig: src/Kconfig
-	$(Q)$(PYTHON) lib/kconfiglib/olddefconfig.py src/Kconfig
-
-menuconfig:
-	$(Q)$(PYTHON) lib/kconfiglib/menuconfig.py src/Kconfig
-
-################ Generic rules
-
-# Make definitions
-.PHONY : all clean distclean olddefconfig menuconfig create-board-link FORCE
-.DELETE_ON_ERROR:
-
-all: $(target-y)
-
-clean:
-	$(Q)rm -rf $(OUT)
-
-distclean: clean
-	$(Q)rm -f .config .config.old
-
--include $(OUT)*.d $(patsubst %,$(OUT)%/*.d,$(dirs-y))
+docker-run: ## Run Docker container
+	docker run -it --rm klipperplace:latest
